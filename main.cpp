@@ -6,7 +6,11 @@
 #include <cstdlib>
 #include <algorithm>
 #include <fstream>
-double transl_distance;
+#include <ncurses.h>
+
+double transl_distance_x = 0;
+double transl_distance_y = 0;
+double transl_distance_z = 5;
 // very simple container with easy string
 class Point {
 public:
@@ -21,10 +25,6 @@ public:
     Point(double inputx, double inputy) {
         x = inputx;
         y = inputy;
-    }
-
-    void print() {
-        std::cout << "(" << x << ", " << y << ")" << std::endl;
     }
 
     Point scale(double scalar) {
@@ -108,17 +108,6 @@ class Triangle {
             }
             return false;
         }
-
-        void print() {
-            std::cout << "Printing triangle: " << std::endl;
-            std::cout << "p1: ";
-            A.print();
-            std::cout << "p2: ";
-            B.print();
-            std::cout << "p3: ";
-            C.print();
-            std::cout << "\n" << std::endl;
-        }
 };
 
 struct BoundingBox {
@@ -141,9 +130,6 @@ class Point3D {
             x = newx;
             y = newy;
             z = newz;
-        }
-        void print() {
-        std::cout << "(" << x << ", " << y << ", " << z << ")" << std::endl;
         }
 
         Point3D scale(double scalar) {
@@ -192,17 +178,6 @@ class Triangle3D {
             B = Point3D(0, 0, 0);
             C = Point3D(0, 0, 0);
         }
-
-        void print() {
-            std::cout << "Printing triangle: " << std::endl;
-            std::cout << "p1: ";
-            A.print();
-            std::cout << "p2: ";
-            B.print();
-            std::cout << "p3: ";
-            C.print();
-            std::cout << "\n" << std::endl;
-        }
 };
 
 // very simple matrix class just supporting matrix-vector multplication
@@ -246,7 +221,7 @@ class Board {
         }
 
         void print_board(std::vector<Triangle> triangle, int length) {
-            std::cout << "\033[H\033[2J"; // clear the console
+            clear(); // clear the console
 
             int width = tri_bounding_box.max_x - tri_bounding_box.min_x + 1;
             int height = tri_bounding_box.max_y - tri_bounding_box.min_y + 1; // index at an offset to prevent negative indices
@@ -279,9 +254,9 @@ class Board {
             // Iterate down since in the console things are printed from up to down
             for (int y = tri_bounding_box.max_y; y >= tri_bounding_box.min_y; --y) {
                 for (int x = tri_bounding_box.min_x; x <= tri_bounding_box.max_x; ++x) {
-                    std::cout << framebuffer[x - tri_bounding_box.min_x][y - tri_bounding_box.min_y]; // print the framebuffer if a point exists, add offset
+                    printw(framebuffer[x - tri_bounding_box.min_x][y - tri_bounding_box.min_y].c_str()); // print the framebuffer if a point exists, add offset
                 }
-                std::cout << "" << std::endl; // move to the next row
+                printw("\n"); // move to the next row
             }
         }
 };
@@ -316,24 +291,26 @@ class Operations3D {
             double c = cos(seconds);
             std::vector<Triangle3D> output_triangles;
             Matrix rotatez = Matrix(c, 0, s, 0, 1, 0, -s, 0, c);
-            Matrix rotatex = Matrix(1, 0, 0, 0, c, -s, 0, s, c);
             for (size_t k = 0; k < length; k++) {
                 Point3D point1 = rotatez.multiply_with_vector(Triangles3D[k].A);
                 Point3D point2 = rotatez.multiply_with_vector(Triangles3D[k].B);
                 Point3D point3 = rotatez.multiply_with_vector(Triangles3D[k].C);
-                point1 = rotatex.multiply_with_vector(point1);
-                point2 = rotatex.multiply_with_vector(point2);
-                point3 = rotatex.multiply_with_vector(point3);
-                // translate them back so they aren't right in front of the camera
-                point1.z += transl_distance;
-                point2.z += transl_distance;
-                point3.z += transl_distance;
+                // translate them
+                point1.z += transl_distance_z;
+                point2.z += transl_distance_z;
+                point3.z += transl_distance_z;
+                point1.x += transl_distance_x;
+                point2.x += transl_distance_x;
+                point3.x += transl_distance_x;
+                point1.y += transl_distance_y;
+                point2.y += transl_distance_y;
+                point3.y += transl_distance_y;
                 output_triangles.push_back(Triangle3D(point1, point2, point3));
             }
             return output_triangles;
         }
         static std::vector<Triangle3D> sortAndMaterializeTriangleArr(std::vector<Triangle3D> Triangles3D, double length) {
-            std::string shades = "-~+*#@$";
+            std::string shades = "-~+*$#@";
             for (size_t k = 0; k < length; k++) {
                 // compute B - A and C - A
                 Point3D vec1 = Triangles3D[k].B.add(Triangles3D[k].A.negate()).normalize();
@@ -443,23 +420,78 @@ class MeshLoader {
     }
 
 };
+
+int bufferedChar = -1;
+int delayTimer = 5;
+class NcursesManager {
+    public:
+        static void init() {
+            initscr();              // start ncurses
+            cbreak();               // no line buffering
+            noecho();               // don’t echo input
+            nodelay(stdscr, TRUE);  // make getch non-blocking
+            keypad(stdscr, TRUE);   // allow arrow keys, etc.
+        }
+        static int getChar() {
+            int ch = getch();
+            delayTimer--;
+            if (delayTimer < 0) {
+                delayTimer = 5;
+                bufferedChar = -1; // assume null char if the user hasnt pushed anything within 5 iteration
+            }
+            if (ch != -1) { // if it exists then the user pushed a character so record that
+                bufferedChar = ch;
+                delayTimer = 5;
+            }
+            if (bufferedChar == 'q') {
+                printw("Thanks for rasterizing!");
+                endwin();
+                exit(1);
+            }
+            if (bufferedChar == -1) {
+                return 'p'; // we are never gonna use p
+            }
+            return bufferedChar;
+        }
+};
+
+class PlayerMovement {
+    public:
+        static void handleTranslations() {
+            int currentChar = NcursesManager::getChar();
+            if (currentChar == 's') {
+                transl_distance_z += 0.05;
+            }
+            if (currentChar == 'w') {
+                transl_distance_z -= 0.05;
+            }
+            if (currentChar == 'd') {
+                transl_distance_x -= 0.05;
+            }
+            if (currentChar == 'a') {
+                transl_distance_x += 0.05;
+            }
+            if (currentChar == ' ') {
+                transl_distance_y -= 0.05;
+            }
+            if (currentChar == 'c') {
+                transl_distance_y += 0.05;
+            }
+        }
+};
+
 int main() {
     std::string path;
-    std::string zoomstr;
     std::string widthminstr;
     std::string heightminstr;
     std::string widthmaxstr;
     std::string heightmaxstr;
-    std::string transl_distance_str;
-    double zoom;
     int width_min;
     int height_min;
     int width_max;
     int height_max;
     std::cout << "What would you like to render (path to .obj file): " << std::endl;
     std::cin >> path;
-    std::cout << "Zoom value?" << std::endl;
-    std::cin >> zoomstr;
     std::cout << "Enter screen width min: " << std::endl;
     std::cin >> widthminstr;
     std::cout << "Enter screen height min: " << std::endl;
@@ -468,15 +500,13 @@ int main() {
     std::cin >> widthmaxstr;
     std::cout << "Enter screen height max: " << std::endl;
     std::cin >> heightmaxstr;
-    std::cout << "Enter translation distance (5 works for most small 3d objects): " << std::endl;
-    std::cin >> transl_distance_str;
+
+    NcursesManager::init();// take over screen
 
     height_max = std::stoi(heightmaxstr);
     width_max = std::stoi(widthmaxstr);
     height_min = std::stoi(heightminstr);
     width_min = std::stoi(widthminstr);
-    zoom = std::stod(zoomstr);
-    transl_distance = std::stod(transl_distance_str);
 
     std::vector<Triangle3D> triangle_to_render = MeshLoader::loadFromObjFile(path);
     std::srand(std::time(0));
@@ -491,10 +521,12 @@ int main() {
         for (size_t k = 0; k < triangle_to_render.size(); k++) {
             new_triangle[k] = triangle_to_render[k];
         }
+        PlayerMovement::handleTranslations();
         transformed_triangles = Operations3D::transform3DTriangleArr(new_triangle, new_triangle.size());
         materialized_triangles = Operations3D::sortAndMaterializeTriangleArr(transformed_triangles, transformed_triangles.size());
-        projected_triangles = Operations3D::project3DTriangleArr(materialized_triangles, materialized_triangles.size(), zoom);
+        projected_triangles = Operations3D::project3DTriangleArr(materialized_triangles, materialized_triangles.size(), 30);
         b1.print_board(projected_triangles, projected_triangles.size());
+        refresh();
     }
     return 0;
 }
