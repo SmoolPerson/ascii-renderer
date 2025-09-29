@@ -414,7 +414,7 @@ class MeshLoader {
         for (size_t k = 0; k < output_faces.size(); k++) {
             // convert it to an array of triangles object
             // get the face, and look up the vertex for each one
-            // obj files are indexed from 0 btw
+            // obj files are indexed from 1 so subtract one
             std::vector<double> p1vec = output_vertices[output_faces[k][0] - 1];
             Point3D p1 = Point3D(p1vec[0], p1vec[1], p1vec[2]);
 
