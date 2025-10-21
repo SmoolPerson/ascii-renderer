@@ -3,20 +3,14 @@
 #include <cmath>
 #include <thread>
 #include <vector>
-#include <cstdlib>
 #include <algorithm>
 #include <fstream>
-#include <ncurses.h>
-
-double transl_distance_x = 0;
-double transl_distance_y = 0;
-double transl_distance_z = 5;
+#include <SFML/Graphics.hpp>
 // very simple container with easy string
 class Point {
 public:
     double y;
     double x;
-
     Point() {
         x = 0;
         y = 0;
@@ -46,6 +40,9 @@ public:
         }
         return Point(x / length, y / length);
     }
+    bool operator==(const Point& other) const {
+        return x == other.x && y == other.y;
+    }
 };
 
 class Triangle {
@@ -53,7 +50,7 @@ class Triangle {
         Point A;
         Point B;
         Point C;
-        std::string material = "q";
+        int shade = 0;
         Triangle(Point A, Point B, Point C) {
             this->A = A;
             this->B = B;
@@ -103,11 +100,17 @@ class Triangle {
 
             double t = ((p1.x - p0.x)*(p.y - p0.y) - (p.x - p0.x)*(p1.y - p0.y)) / 
            ((p1.x - p0.x)*(p2.y - p0.y) - (p2.x - p0.x)*(p1.y - p0.y));
-            if (fabs(s) < 0.05 || fabs(t) < 0.05 || fabs(s + t - 1) < 0.05) {
+            if (fabs(s) < 0.01 || fabs(t) < 0.01 || fabs(s + t - 1) < 0.01) {
                 return true;
             }
             return false;
         }
+        bool operator==(const Triangle& other) const {
+            return (A == other.A && B == other.B && C == other.C) ||
+           (A == other.B && B == other.C && C == other.A) ||
+           (A == other.C && B == other.A && C == other.B);
+    }
+
 };
 
 struct BoundingBox {
@@ -166,7 +169,7 @@ class Triangle3D {
         Point3D A;
         Point3D B;
         Point3D C;
-        std::string material = "";
+        int shade = 0;
 
         Triangle3D(Point3D A, Point3D B, Point3D C) {
             this->A = A;
@@ -209,54 +212,123 @@ class Matrix {
 };
 
 // a board for where points can be printed
-class Board {
+class Screen {
     public:
         BoundingBox tri_bounding_box;
-
-        Board(double min_x, double min_y, double max_x, double max_y) {
+        sf::RenderWindow window;
+        sf::Image image;
+        sf::Texture texture;
+        uint width;
+        uint height;
+        Screen(double min_x, double min_y, double max_x, double max_y) {
             tri_bounding_box.min_x = min_x;
             tri_bounding_box.max_x = max_x;
             tri_bounding_box.max_y = max_y;
             tri_bounding_box.min_y = min_y;
+            width = abs(max_x - min_x);
+            height = abs(max_y - min_y);
+            window = sf::RenderWindow(sf::VideoMode({width, height}), "SFML window");
+            window.setFramerateLimit(60);
         }
 
         void print_board(std::vector<Triangle> triangle, int length) {
-            clear(); // clear the console
-
-            int width = tri_bounding_box.max_x - tri_bounding_box.min_x + 1;
-            int height = tri_bounding_box.max_y - tri_bounding_box.min_y + 1; // index at an offset to prevent negative indices
-            std::vector<std::vector<std::string>> framebuffer(width, std::vector<std::string>(height, ".."));
-            
+            image = sf::Image({width, height}, sf::Color::Black);
+            int total_iters = 0;
+            auto startTime = std::chrono::steady_clock::now();
             for (size_t l = 0; l < triangle.size(); l++) {
-                BoundingBox temp;
+                int temp_iters = 0;
+                BoundingBox temp; // temporary bounding box for the bounding box of the current triangle so we loop over less points
 
                 // compute bounding box then loop over that
-                temp.max_x = std::max(triangle[l].A.x, std::max(triangle[l].B.x, triangle[l].C.x)) - tri_bounding_box.min_x;
-                temp.max_y = std::max(triangle[l].A.y, std::max(triangle[l].B.y, triangle[l].C.y)) - tri_bounding_box.min_y;
-                temp.min_x = std::min(triangle[l].A.x, std::min(triangle[l].B.x, triangle[l].C.x)) - tri_bounding_box.min_x;
-                temp.min_y = std::min(triangle[l].A.y, std::min(triangle[l].B.y, triangle[l].C.y)) - tri_bounding_box.min_y;;
-                
-                // clamp to make sure it isn't out of the screen
-                int minX = std::max(0, (int) temp.min_x);
-                int maxX = std::min(width - 1, (int) temp.max_x);
-                int minY = std::max(0, (int) temp.min_y);
-                int maxY = std::min(height - 1, (int) temp.max_y);
-                for (int x = minX; x <= maxX; x++) {
-                    for (int y = minY; y <= maxY; y++) {
-                        // undo offset for point in triangle test
-                        if (triangle[l].point_in_triangle(Point(x + tri_bounding_box.min_x, y + tri_bounding_box.min_y))) {
-                            framebuffer[x][y] = triangle[l].material + triangle[l].material;
+                temp.max_x = std::max(triangle[l].A.x, std::max(triangle[l].B.x, triangle[l].C.x));
+                temp.max_y = std::max(triangle[l].A.y, std::max(triangle[l].B.y, triangle[l].C.y));
+                temp.min_x = std::min(triangle[l].A.x, std::min(triangle[l].B.x, triangle[l].C.x));
+                temp.min_y = std::min(triangle[l].A.y, std::min(triangle[l].B.y, triangle[l].C.y));
+
+                // clamp it so it doesnt go outside the screen width/height
+                temp.min_x = std::max(temp.min_x, tri_bounding_box.min_x);
+                temp.max_x = std::min(temp.max_x, tri_bounding_box.max_x);
+                temp.min_y = std::max(temp.min_y, tri_bounding_box.min_y);
+                temp.max_y = std::min(temp.max_y, tri_bounding_box.max_y);
+                for (int x = temp.min_x; x <= temp.max_x; x++) {
+                    for (int y = temp.min_y; y <= temp.max_y; y++) {
+                        total_iters++;
+                        temp_iters++;
+                        if (triangle[l].point_in_triangle(Point(x, y))) {
+                            sf::Color col = image.getPixel({(uint)(x - tri_bounding_box.min_x), (uint) (y - tri_bounding_box.min_y)});
+                            if (col == sf::Color::Black) {
+                                image.setPixel({(uint)(x - tri_bounding_box.min_x), (uint) (y - tri_bounding_box.min_y)}, sf::Color(triangle[l].shade, triangle[l].shade, triangle[l].shade));
+                            }
                         }
                     }
                 }
             }
-        
-            // Iterate down since in the console things are printed from up to down
-            for (int y = tri_bounding_box.max_y; y >= tri_bounding_box.min_y; --y) {
-                for (int x = tri_bounding_box.min_x; x <= tri_bounding_box.max_x; ++x) {
-                    printw(framebuffer[x - tri_bounding_box.min_x][y - tri_bounding_box.min_y].c_str()); // print the framebuffer if a point exists, add offset
-                }
-                printw("\n"); // move to the next row
+            auto endTime = std::chrono::steady_clock::now();
+            auto duration = std::chrono::duration<double>(endTime - startTime);
+            while (const std::optional event = window.pollEvent())
+            {
+            // Close window: exit
+            if (event->is<sf::Event::Closed>())
+                window.close();
+            }
+
+            window.clear();
+            texture.loadFromImage(image);
+            sf::Sprite sprite(texture);
+            window.draw(sprite);
+            window.display();
+        }
+};
+
+
+class Player {
+    public:
+        Point3D current_pos;
+        double z_angle = 0.1;
+        double x_angle = 0.1;
+        Player(Point3D pos) {
+            current_pos = pos;
+        }
+        Player() {
+            current_pos = Point3D(0, 0, 5);
+        }
+        Point3D rotateAmtZ(Point3D rotationAmt) {
+            double s = sin(-z_angle);
+            double c = cos(-z_angle);
+            Matrix rotatez = Matrix(c, 0, s, 0, 1, 0, -s, 0, c); // z rotation matrix
+            Point3D rotated = rotatez.multiply_with_vector(rotationAmt);
+            return rotated;
+        }
+        void handle_movement() {
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::W)) {
+                current_pos = current_pos.add(rotateAmtZ(Point3D(0, 0, -0.06))); // add the move amount rotated by the angle
+            }
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::S)) {
+                current_pos = current_pos.add(rotateAmtZ(Point3D(0, 0, 0.06)));
+            }
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::A)) {
+                current_pos = current_pos.add(rotateAmtZ(Point3D(0.06, 0, 0)));
+            }
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::D)) {
+                current_pos = current_pos.add(rotateAmtZ(Point3D(-0.06, 0, 0)));
+            }
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Space)) {
+                current_pos.y -= 0.06;
+            }
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::LShift)) {
+                current_pos.y += 0.06;
+            }
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Left)) {
+                z_angle += 0.04;
+            }
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Right)) {
+                z_angle -= 0.04;
+            }
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Up)) {
+                x_angle += 0.04;
+            }
+            if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Down)) {
+                x_angle -= 0.04;
             }
         }
 };
@@ -274,68 +346,86 @@ class Operations3D {
                     if (Triangles3D[k].A.z < 0 || Triangles3D[k].B.z < 0 || Triangles3D[k].C.z < 0) {
                         continue;
                     }
+                    // flip y to make the image be right-side up
+                    Triangles3D[k].A.y = -Triangles3D[k].A.y;
+                    Triangles3D[k].B.y = -Triangles3D[k].B.y;
+                    Triangles3D[k].C.y = -Triangles3D[k].C.y;
                     Point pointA = project3DPoint(Triangles3D[k].A, focus);
                     Point pointB = project3DPoint(Triangles3D[k].B, focus);
                     Point pointC = project3DPoint(Triangles3D[k].C, focus);
                     Triangle object_to_push_back = Triangle(pointA, pointB, pointC);
-                    object_to_push_back.material = Triangles3D[k].material;
+                    object_to_push_back.shade = Triangles3D[k].shade;
                     triangles.push_back(object_to_push_back);
                 }
             return triangles;
         }
 
-        static std::vector<Triangle3D> transform3DTriangleArr(std::vector<Triangle3D> Triangles3D, double length) {
-            double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-            seconds *= 1.5;
-            double s = sin(seconds);
-            double c = cos(seconds);
+        static std::vector<Triangle3D> transform3DTriangleArr(std::vector<Triangle3D> Triangles3D, double length, Player player) {
+            double z_angle = player.z_angle;
+            double x_angle = player.x_angle;
+            double s = sin(z_angle);
+            double c = cos(z_angle);
+            double sx = sin(x_angle);
+            double cx = cos(x_angle);
             std::vector<Triangle3D> output_triangles;
             Matrix rotatez = Matrix(c, 0, s, 0, 1, 0, -s, 0, c);
+            Matrix rotatex = Matrix(1, 0, 0, 0, cx, -sx, 0, sx, cx);
             for (size_t k = 0; k < length; k++) {
-                Point3D point1 = rotatez.multiply_with_vector(Triangles3D[k].A);
-                Point3D point2 = rotatez.multiply_with_vector(Triangles3D[k].B);
-                Point3D point3 = rotatez.multiply_with_vector(Triangles3D[k].C);
-                // translate them
-                point1.z += transl_distance_z;
-                point2.z += transl_distance_z;
-                point3.z += transl_distance_z;
-                point1.x += transl_distance_x;
-                point2.x += transl_distance_x;
-                point3.x += transl_distance_x;
-                point1.y += transl_distance_y;
-                point2.y += transl_distance_y;
-                point3.y += transl_distance_y;
+                Point3D point1 = Triangles3D[k].A;
+                Point3D point2 = Triangles3D[k].B;
+                Point3D point3 = Triangles3D[k].C;
+                // translate them based on the players position
+                point1.z += player.current_pos.z;
+                point2.z += player.current_pos.z;
+                point3.z += player.current_pos.z;
+                point1.x += player.current_pos.x;
+                point2.x += player.current_pos.x;
+                point3.x += player.current_pos.x;
+                point1.y += player.current_pos.y;
+                point2.y += player.current_pos.y;
+                point3.y += player.current_pos.y;
+                point1 = rotatez.multiply_with_vector(point1);
+                point2 = rotatez.multiply_with_vector(point2);
+                point3 = rotatez.multiply_with_vector(point3);
+                point1 = rotatex.multiply_with_vector(point1);
+                point2 = rotatex.multiply_with_vector(point2);
+                point3 = rotatex.multiply_with_vector(point3);
                 output_triangles.push_back(Triangle3D(point1, point2, point3));
             }
             return output_triangles;
         }
-        static std::vector<Triangle3D> sortAndMaterializeTriangleArr(std::vector<Triangle3D> Triangles3D, double length) {
-            std::string shades = "-~+*$#@";
+        static Point3D getNormal(Triangle3D tri) {
+            // compute B - A and C - A to get two vectors that align the triangle (normalize since we only care about direction)
+            Point3D vec1 = tri.B.add(tri.A.negate()).normalize();
+            Point3D vec2 = tri.C.add(tri.A.negate()).normalize();
+            Point3D normal = vec1.cross(vec2).normalize(); // do cross product to get the normal vector
+            return normal;
+        }
+        static std::vector<Triangle3D> sortAndMaterializeTriangleArr(std::vector<Triangle3D> Triangles3D, double length, Player player) {
+            std::vector<Triangle3D> newTriangles3D;
             for (size_t k = 0; k < length; k++) {
-                // compute B - A and C - A
-                Point3D vec1 = Triangles3D[k].B.add(Triangles3D[k].A.negate()).normalize();
-                Point3D vec2 = Triangles3D[k].C.add(Triangles3D[k].A.negate()).normalize();
-                // compute normalized cross product aka the direction the triangle is facing
-                Point3D normal = vec1.cross(vec2).normalize();
-
-                // now this is the hardcoded (for now) light direction vector (1, 1, 1) normalized
+                Point3D normal = getNormal(Triangles3D[k]);
+                // now this is the hardcoded (for now) light direction vector (0, 0, -1) normalized
                 Point3D direction = Point3D(0, 0, -1);
                 // compute dot
                 double dotprod = direction.dot(normal);
-                // scale it up
-                dotprod = std::max(dotprod, 0.0);
-                dotprod *= 7;
+                // rotate current position so it matches the angle
+                double c = cos(player.z_angle);
+                double s = sin(player.z_angle);
+                Matrix rotatez = Matrix(c, 0, s, 0, 1, 0, -s, 0, c);
+                // scale it up, max of 0.3 so there is ambient lighting
+                dotprod = std::max(dotprod, 0.3);
                 // now pick the shade value, values close to 1 will have lighter shade
-                Triangles3D[k].material = shades[(int) dotprod];
+                newTriangles3D.push_back(Triangles3D[k]);
+                newTriangles3D[newTriangles3D.size() - 1].shade = (int) (dotprod*256); // accessing latest element, and shade is from 0-255 (rgb)
             }
-
-            std::sort(Triangles3D.begin(), Triangles3D.end(), compareAvgZVal);
-            return Triangles3D;
+            std::sort(newTriangles3D.begin(), newTriangles3D.end(), compareAvgZVal);
+            return newTriangles3D;
         }
         static bool compareAvgZVal(Triangle3D w, Triangle3D u) {
-            double avgwZ = (w.A.z + w.B.z + w.C.z) / 3;
-            double avguZ = (u.A.z + u.B.z + u.C.z) / 3;
-            return avgwZ > avguZ;
+            double avgwZ = (w.A.z + w.B.z + w.C.z);
+            double avguZ = (u.A.z + u.B.z + u.C.z);
+            return avgwZ < avguZ;
         }
 };
 
@@ -368,7 +458,6 @@ class MeshLoader {
                 std::vector<std::string> points = split(line, ' ');
                 // remove any extraneous entries
                 points.erase(std::remove(points.begin(), points.end(), ""), points.end());
-
                 temp =  {std::stod(points[0]), std::stod(points[1]), std::stod(points[2])};
                 output_vertices.push_back(temp);
             }
@@ -421,65 +510,6 @@ class MeshLoader {
 
 };
 
-int bufferedChar = -1;
-int delayTimer = 5;
-class NcursesManager {
-    public:
-        static void init() {
-            initscr();              // start ncurses
-            cbreak();               // no line buffering
-            noecho();               // don’t echo input
-            nodelay(stdscr, TRUE);  // make getch non-blocking
-            keypad(stdscr, TRUE);   // allow arrow keys, etc.
-        }
-        static int getChar() {
-            int ch = getch();
-            delayTimer--;
-            if (delayTimer < 0) {
-                delayTimer = 5;
-                bufferedChar = -1; // assume null char if the user hasnt pushed anything within 5 iteration
-            }
-            if (ch != -1) { // if it exists then the user pushed a character so record that
-                bufferedChar = ch;
-                delayTimer = 5;
-            }
-            if (bufferedChar == 'q') {
-                printw("Thanks for rasterizing!");
-                endwin();
-                exit(1);
-            }
-            if (bufferedChar == -1) {
-                return 'p'; // we are never gonna use p
-            }
-            return bufferedChar;
-        }
-};
-
-class PlayerMovement {
-    public:
-        static void handleTranslations() {
-            int currentChar = NcursesManager::getChar();
-            if (currentChar == 's') {
-                transl_distance_z += 0.05;
-            }
-            if (currentChar == 'w') {
-                transl_distance_z -= 0.05;
-            }
-            if (currentChar == 'd') {
-                transl_distance_x -= 0.05;
-            }
-            if (currentChar == 'a') {
-                transl_distance_x += 0.05;
-            }
-            if (currentChar == ' ') {
-                transl_distance_y -= 0.05;
-            }
-            if (currentChar == 'c') {
-                transl_distance_y += 0.05;
-            }
-        }
-};
-
 int main() {
     std::string path;
     std::string widthminstr;
@@ -501,32 +531,26 @@ int main() {
     std::cout << "Enter screen height max: " << std::endl;
     std::cin >> heightmaxstr;
 
-    NcursesManager::init();// take over screen
-
     height_max = std::stoi(heightmaxstr);
     width_max = std::stoi(widthmaxstr);
     height_min = std::stoi(heightminstr);
     width_min = std::stoi(widthminstr);
 
     std::vector<Triangle3D> triangle_to_render = MeshLoader::loadFromObjFile(path);
-    std::srand(std::time(0));
-
-    std::vector<Triangle3D> new_triangle(triangle_to_render.size());
-    Board b1 = Board(width_min, height_min, width_max, height_max);
+    Player player1 = Player();
+    Screen b1 = Screen(width_min, height_min, width_max, height_max);
     std::vector<Triangle3D> transformed_triangles;
     std::vector<Triangle3D> materialized_triangles;
     std::vector<Triangle> projected_triangles;
     while (1) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
-        for (size_t k = 0; k < triangle_to_render.size(); k++) {
-            new_triangle[k] = triangle_to_render[k];
-        }
-        PlayerMovement::handleTranslations();
-        transformed_triangles = Operations3D::transform3DTriangleArr(new_triangle, new_triangle.size());
-        materialized_triangles = Operations3D::sortAndMaterializeTriangleArr(transformed_triangles, transformed_triangles.size());
-        projected_triangles = Operations3D::project3DTriangleArr(materialized_triangles, materialized_triangles.size(), 30);
+        player1.handle_movement();
+        transformed_triangles = Operations3D::transform3DTriangleArr(triangle_to_render, triangle_to_render.size(), player1);
+        materialized_triangles = Operations3D::sortAndMaterializeTriangleArr(transformed_triangles, transformed_triangles.size(), player1);
+        projected_triangles = Operations3D::project3DTriangleArr(materialized_triangles, materialized_triangles.size(), 500);\
         b1.print_board(projected_triangles, projected_triangles.size());
-        refresh();
+        if (!b1.window.isOpen()) {
+            return 1;
+        }
     }
     return 0;
 }
